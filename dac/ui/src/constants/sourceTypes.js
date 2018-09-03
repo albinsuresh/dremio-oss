@@ -30,6 +30,7 @@ export const NAS = 'NAS';
 export const ORACLE = 'ORACLE';
 export const POSTGRESQL = 'POSTGRES';
 export const ADL = 'ADL';
+export const TCDB = 'TCDB';
 
 // These are not implemented in the backend yet.
 export const CASSANDRA = 'CASSANDRA';
@@ -52,5 +53,6 @@ export const sourceProperties = [
   {label: 'NAS', sourceType: NAS},
   {label: 'Oracle', sourceType: ORACLE},
   {label: 'PostgreSQL', sourceType: POSTGRESQL, beta: true},
-  {label: 'Azure Data Lake Store', sourceType: ADL, beta: true}
+  {label: 'Azure Data Lake Store', sourceType: ADL, beta: true},
+  {label: 'Terracotta DB', sourceType: TCDB, beta: true}
 ];

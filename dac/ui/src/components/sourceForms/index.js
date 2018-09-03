@@ -29,6 +29,7 @@ import SQLServerForm from './SQLServerForm';
 import HiveForm from './HiveForm';
 import RedshiftForm from './RedshiftForm';
 import ADLForm from './ADLForm';
+import TerracottaDBForm from './TerracottaDBForm';
 
 const sourceForms = {
   ElasticForm,
@@ -45,7 +46,8 @@ const sourceForms = {
   HiveForm,
   DB2Form,
   RedshiftForm,
-  ADLForm
+  ADLForm,
+  TerracottaDBForm
 };
 
 // only include available source forms

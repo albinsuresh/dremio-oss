@@ -358,5 +358,23 @@
         ]
       }
     ]
+  },
+  {
+    "id": "tcdb",
+    "name": "TCDB",
+    "sections": [
+      {
+        "name": "Config",
+        "id": "config",
+        "fields": [
+          {
+            "name": "Host",
+            "id": "seedHostList",
+            "type": "repeated",
+            "subtype": "list"
+          }
+        ]
+      }
+    ]
   }
 ]

@@ -46,5 +46,6 @@
     <module>pdfs</module>
     <module>mongo</module>
     <module>s3</module>
+    <module>terracotta-db</module>
   </modules>
 </project>

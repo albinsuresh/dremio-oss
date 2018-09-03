@@ -74,6 +74,11 @@
     </dependency>
     <dependency>
       <groupId>com.dremio.plugin</groupId>
+      <artifactId>dremio-tcdb-plugin</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.dremio.plugin</groupId>
       <artifactId>dremio-mongo-plugin</artifactId>
       <version>${project.version}</version>
     </dependency>
@@ -254,7 +259,7 @@
               </descriptorRefs>
               <appendAssemblyId>false</appendAssemblyId>
               <finalName>${dremio.distribution.name}-${project.version}</finalName>
-              <tarLongFileMode>gnu</tarLongFileMode>
+              <tarLongFileMode>posix</tarLongFileMode>
             </configuration>
           </execution>
         </executions>
