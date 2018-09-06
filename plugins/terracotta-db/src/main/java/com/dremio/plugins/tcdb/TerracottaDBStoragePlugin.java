@@ -59,19 +59,23 @@ public class TerracottaDBStoragePlugin implements StoragePlugin {
     this.storeConfig = storeConfig;
   }
 
+  public DatasetManager getDatasetManager() {
+    return datasetManager;
+  }
+
   @Override
   public Iterable<SourceTableDefinition> getDatasets(String user, boolean ignoreAuthErrors) throws Exception {
     return datasetManager.listDatasets().entrySet().stream()
       .map(dsEntry -> {
-        NamespaceKey namespaceKey = new NamespaceKey(ImmutableList.<String>of(name, "default", dsEntry.getKey()));
-        return new TerracottaDBTableBuilder(dsEntry.getKey(), dsEntry.getValue(), namespaceKey, datasetManager);
+        NamespaceKey namespaceKey = new NamespaceKey(ImmutableList.of(name, dsEntry.getKey()));
+        return new TerracottaDBTableBuilder(namespaceKey, datasetManager, context);
       })
       .collect(Collectors.toList());
   }
 
   @Override
   public SourceTableDefinition getDataset(NamespaceKey datasetPath, DatasetConfig oldDataset, boolean ignoreAuthErrors) throws Exception {
-    return null;
+    return new TerracottaDBTableBuilder(datasetPath, datasetManager, context);
   }
 
   @Override

@@ -15,7 +15,23 @@
  */
 package com.dremio.plugins.tcdb;
 
+import io.protostuff.ByteString;
+
+import org.apache.arrow.memory.BufferAllocator;
+import org.apache.arrow.vector.ValueVector;
+
+import com.dremio.common.exceptions.ExecutionSetupException;
 import com.dremio.common.exceptions.UserException;
+import com.dremio.common.expression.CompleteType;
+import com.dremio.exec.physical.base.GroupScan;
+import com.dremio.exec.planner.cost.ScanCostFactor;
+import com.dremio.exec.record.BatchSchema;
+import com.dremio.exec.server.SabotContext;
+import com.dremio.exec.store.SampleMutator;
+import com.dremio.plugins.tcdb.internal.TerracottaDBRecordReader;
+import com.dremio.plugins.tcdb.internal.TerracottaDBSubScanSpec;
+import com.dremio.plugins.tcdb.proto.TerracottaDBPluginProto;
+import com.dremio.service.namespace.DatasetHelper;
 import com.dremio.service.namespace.NamespaceKey;
 import com.dremio.service.namespace.SourceTableDefinition;
 import com.dremio.service.namespace.dataset.proto.DatasetConfig;
@@ -23,12 +39,18 @@ import com.dremio.service.namespace.dataset.proto.DatasetField;
 import com.dremio.service.namespace.dataset.proto.DatasetSplit;
 import com.dremio.service.namespace.dataset.proto.DatasetType;
 import com.dremio.service.namespace.dataset.proto.PhysicalDataset;
+import com.dremio.service.namespace.dataset.proto.ReadDefinition;
+import com.dremio.service.namespace.dataset.proto.ScanStats;
+import com.dremio.service.namespace.dataset.proto.ScanStatsType;
+import com.dremio.service.namespace.proto.EntityId;
+import com.dremio.service.users.SystemUser;
 import com.terracottatech.store.Dataset;
 import com.terracottatech.store.StoreException;
 import com.terracottatech.store.Type;
 import com.terracottatech.store.manager.DatasetManager;
 
 import java.util.List;
+import java.util.UUID;
 
 public class TerracottaDBTableBuilder implements SourceTableDefinition {
 
@@ -36,16 +58,24 @@ public class TerracottaDBTableBuilder implements SourceTableDefinition {
 
   private final String name;
   private final Type type;
+
   private final NamespaceKey namespaceKey;
   private final DatasetManager datasetManager;
+  private final Dataset<?> dataset;
   private DatasetConfig datasetConfig;
+  private final SabotContext context;
 
-  public TerracottaDBTableBuilder(String name, Type type, NamespaceKey namespaceKey, DatasetManager datasetManager) {
-    this.name = name;
-    this.type = type;
-    this.datasetManager = datasetManager;
-
+  public TerracottaDBTableBuilder(NamespaceKey namespaceKey, DatasetManager datasetManager, SabotContext context) {
     this.namespaceKey = namespaceKey;
+    this.datasetManager = datasetManager;
+    this.name = namespaceKey.getName();
+    this.context = context;
+    try {
+      this.type = datasetManager.listDatasets().get(this.name);
+      this.dataset = datasetManager.getDataset(name, type);
+    } catch (StoreException e) {
+      throw UserException.dataReadError(e).message("Failure while fetching dataset list.").build(logger);
+    }
   }
 
   @Override
@@ -55,29 +85,69 @@ public class TerracottaDBTableBuilder implements SourceTableDefinition {
 
   @Override
   public DatasetConfig getDataset() throws Exception {
-    return null;
-//    return new DatasetConfig().setCreatedAt()
-//      .setPhysicalDataset(new PhysicalDataset())
-//      .setDatasetFieldsList()
-//      .setFullPathList()
-//      .setId()
-//      .setName()
-//      .setOwner()
-//      .setRecordSchema()
-//      .setSchemaVersion()
-//      .setType()
-//      .setVersion();
+    String tableName = namespaceKey.getName();
+    ReadDefinition readDefinition = new ReadDefinition()
+      .setExtendedProperty(
+        ByteString.copyFrom(
+          TerracottaDBPluginProto.TCDBTableXattr.newBuilder()
+            .setTable(com.google.protobuf.ByteString.copyFrom(tableName.getBytes())).build().toByteArray()
+        )
+      )
+      .setScanStats(new ScanStats()
+        .setRecordCount(5L)   //TODO estimate
+        .setType(ScanStatsType.NO_EXACT_ROW_COUNT)
+        .setScanFactor(ScanCostFactor.OTHER.getFactor())
+      );
+
+    BatchSchema schema = getSchema();
+
+    this.datasetConfig = new DatasetConfig()
+      .setFullPathList(namespaceKey.getPathComponents())
+      .setId(new EntityId(UUID.randomUUID().toString()))
+      .setType(DatasetType.PHYSICAL_DATASET)
+      .setName(namespaceKey.getName())
+      .setOwner(SystemUser.SYSTEM_USERNAME)
+      .setPhysicalDataset(new PhysicalDataset())
+      .setRecordSchema(schema.toByteString())
+      .setSchemaVersion(DatasetHelper.CURRENT_VERSION)
+      .setReadDefinition(readDefinition);
+
+    return this.datasetConfig;
   }
 
-//  private String getDatasetColumnNames() {
-//    try {
-//      Dataset<?> dataset = datasetManager.getDataset(name, type);
-//      dataset.reader().records().limit(1).flatMap(record -> record.stream()).map(cell -> cell.definition()).map(cellDef -> new DatasetField().setFieldName(cellDef.name()).setFieldSchema())
-//    } catch (StoreException e) {
-//      throw UserException.dataReadError(e).message("Failure while connecting to Terracotta.").build(logger);
-//    }
+  private BatchSchema getSchema() {
+    BatchSchema oldSchema = null;
+    ByteString bytes = datasetConfig != null ? DatasetHelper.getSchemaBytes(datasetConfig) : null;
+    if(bytes != null) {
+      oldSchema = BatchSchema.deserialize(bytes);
+    }
+
+    final TerracottaDBSubScanSpec spec = new TerracottaDBSubScanSpec(namespaceKey.getName());
+    try (
+      BufferAllocator allocator = context.getAllocator().newChildAllocator("tcdb-sample", 0, Long.MAX_VALUE);
+      SampleMutator mutator = new SampleMutator(allocator);
+      TerracottaDBRecordReader reader = new TerracottaDBRecordReader(null, GroupScan.ALL_COLUMNS, spec, datasetManager);
+    ) {
+      if(oldSchema != null) {
+        oldSchema.materializeVectors(GroupScan.ALL_COLUMNS, mutator);
+      }
+
+//      // add row key.
+//      mutator.addField(CompleteType.VARBINARY.toField(HBaseRecordReader.ROW_KEY), ValueVector.class);
 //
-//  }
+//      // add all column families.
+//      for (HColumnDescriptor col : descriptor.getFamilies()) {
+//        mutator.addField(CompleteType.struct().toField(col.getNameAsString()), ValueVector.class);
+//      }
+
+      reader.setup(mutator);
+      reader.next();
+      mutator.getContainer().buildSchema(BatchSchema.SelectionVectorMode.NONE);
+      return mutator.getContainer().getSchema();
+    } catch (ExecutionSetupException e) {
+      throw UserException.dataReadError(e).message("Unable to sample schema for table %s.", namespaceKey.getName()).build(logger);
+    }
+  }
 
   @Override
   public List<DatasetSplit> getSplits() throws Exception {
