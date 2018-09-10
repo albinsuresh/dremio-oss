@@ -40,6 +40,7 @@ import com.terracottatech.store.Dataset;
 import com.terracottatech.store.DatasetReader;
 import com.terracottatech.store.StoreException;
 import com.terracottatech.store.Type;
+import com.terracottatech.store.definition.BoolCellDefinition;
 import com.terracottatech.store.definition.CellDefinition;
 import com.terracottatech.store.definition.IntCellDefinition;
 import com.terracottatech.store.definition.LongCellDefinition;
@@ -48,6 +49,7 @@ import com.terracottatech.store.manager.DatasetManager;
 import com.terracottatech.store.stream.RecordStream;
 
 import java.io.IOException;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -62,14 +64,15 @@ public class TerracottaDBRecordReader extends AbstractRecordReader {
   private final Dataset<?> dataset;
   private final DatasetReader<?> datasetReader;
 
-  private VectorContainerWriter complexWriter;
-  private final WorkingBuffer workingBuffer;
+  OutputMutator outputMutator;
+
   private Map<CellDefinition<?>, ValueVector> columnMap;
+
+  private boolean done = false;
 
   public TerracottaDBRecordReader(OperatorContext context, List<SchemaPath> columns, TerracottaDBSubScanSpec subScanSpec,
                                   DatasetManager datasetManager) {
     super(context, columns);
-    this.workingBuffer = new WorkingBuffer(context.getManagedBuffer());
     String tableName = subScanSpec.getTableName();
     Type type = null;
     try {
@@ -83,40 +86,18 @@ public class TerracottaDBRecordReader extends AbstractRecordReader {
 
   @Override
   public void setup(OutputMutator outputMutator) throws ExecutionSetupException {
-    complexWriter = new VectorContainerWriter(outputMutator);
-    complexWriter.allocate();
-    complexWriter.reset();
+    this.outputMutator = outputMutator;
 
     columnMap = new LinkedHashMap<>();
     datasetReader.records()
       .limit(1)
       .flatMap(record -> record.stream())
       .map(cell -> cell.definition())
-      .forEach(cellDef -> addFieldsToOutput(outputMutator, cellDef));
+      .sorted(Comparator.comparing(cellDefinition -> cellDefinition.name()))
+      .forEach(cellDef -> addFieldsToOutput(cellDef));
   }
 
-  Field getField(String name, Type<?> type) {
-    switch (type.asEnum()) {
-      case CHAR:
-        return CompleteType.VARCHAR.toField(name);
-      case INT:
-        return CompleteType.INT.toField(name);
-      case BOOL:
-        return CompleteType.BIT.toField(name);
-      case LONG:
-        return CompleteType.BIGINT.toField(name);
-      case DOUBLE:
-        return CompleteType.DOUBLE.toField(name);
-      case STRING:
-        return CompleteType.VARCHAR.toField(name);
-      case BYTES:
-        return CompleteType.VARBINARY.toField(name);
-      default:
-        throw new AssertionError("Unsupported type");
-    }
-  }
-
-  void addFieldsToOutput(OutputMutator outputMutator, CellDefinition<?> cellDefinition) {
+  void addFieldsToOutput(CellDefinition<?> cellDefinition) {
     String name = cellDefinition.name();
     Field field;
     Class<? extends ValueVector> vectorClass;
@@ -160,15 +141,19 @@ public class TerracottaDBRecordReader extends AbstractRecordReader {
 
   @Override
   public int next() {
+    if (done) {
+      return 0;
+    }
+
     for (ValueVector v : columnMap.values()) {
       v.clear();
       v.allocateNew();
     }
 
+    AtomicInteger counter = new AtomicInteger(0);
     datasetReader.records().limit(getNumRowsPerBatch()).forEach(record -> {
-      AtomicInteger counter = new AtomicInteger(0);
+      int index = counter.getAndIncrement();
       columnMap.forEach((cellDef, vector) -> {
-        int index = counter.getAndIncrement();
         switch (cellDef.type().asEnum()) {
           case CHAR:
             //TODO Complete
@@ -177,39 +162,43 @@ public class TerracottaDBRecordReader extends AbstractRecordReader {
           case INT:
             NullableIntVector intVector = (NullableIntVector) vector;
             IntCellDefinition intCellDefinition = (IntCellDefinition) cellDef;
-            complexWriter.integer(cellDef.name()).writeInt(record.get(intCellDefinition).get());
+            intVector.setSafe(index, record.get(intCellDefinition).orElse(0));
             break;
           case BOOL:
             //TODO Complete
             NullableBitVector bitVector = (NullableBitVector) vector;
+            BoolCellDefinition boolCellDefinition = (BoolCellDefinition) cellDef;
+            bitVector.setSafe(index, record.get(boolCellDefinition).orElse(false) ? 1 : 0);
             break;
           case LONG:
             LongCellDefinition longCellDefinition = (LongCellDefinition) cellDef;
-            complexWriter.bigInt(cellDef.name()).writeBigInt(record.get(longCellDefinition).get());
             break;
           case DOUBLE:
             //TODO Complete
             NullableFloat8Vector float8Vector = (NullableFloat8Vector) vector;
+            break;
           case STRING:
             NullableVarCharVector varCharVector = (NullableVarCharVector) vector;
             StringCellDefinition stringCellDefinition = (StringCellDefinition) cellDef;
             String stringVal = record.get(stringCellDefinition).get();
-            try {
-              complexWriter.varChar(cellDef.name()).writeVarChar(0, workingBuffer.prepareVarCharHolder(stringVal), workingBuffer.getBuf());
-            } catch (IOException e) {
-              throw new RuntimeException("Encoding failed for: " + stringVal);
-            }
+            varCharVector.set(index, stringVal.getBytes());
             break;
           case BYTES:
             //TODO Complete
             NullableVarBinaryVector varBinaryVector = (NullableVarBinaryVector) vector;
+            break;
           default:
             throw new AssertionError("Unsupported type");
         }
       });
     });
 
-    return 0;
+    for (ValueVector v : columnMap.values()) {
+      v.setValueCount(counter.get());
+    }
+
+    done = true;
+    return counter.get();
   }
 
   @Override

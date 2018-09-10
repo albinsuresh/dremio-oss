@@ -44,10 +44,6 @@ public class TerracottaDBConfig extends ConnectionConf<TerracottaDBConfig, Terra
   public TerracottaDBConfig() {
   }
 
-  public TerracottaDBConfig(List<Host> hosts) {
-    this.hosts = hosts;
-  }
-
   @Override
   public TerracottaDBStoragePlugin newPlugin(SabotContext context, String name, Provider<StoragePluginId> pluginIdProvider) {
     return new TerracottaDBStoragePlugin(name, context, this);

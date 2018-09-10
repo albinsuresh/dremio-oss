@@ -18,6 +18,7 @@ package com.dremio.plugins.tcdb.internal;
 import com.dremio.common.expression.SchemaPath;
 import com.dremio.exec.catalog.StoragePluginId;
 import com.dremio.exec.physical.base.SubScanWithProjection;
+import com.dremio.exec.proto.UserBitShared;
 import com.dremio.exec.record.BatchSchema;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
@@ -29,6 +30,7 @@ public class TerracottaDBSubScan extends SubScanWithProjection {
 
   private final StoragePluginId pluginId;
   private final List<TerracottaDBSubScanSpec> scans;
+  private final String datasetName;
 
   public TerracottaDBSubScan(
     @JsonProperty("userName") String userName,
@@ -36,11 +38,13 @@ public class TerracottaDBSubScan extends SubScanWithProjection {
     @JsonProperty("tableSchemaPath") List<String> tableSchemaPath,
     @JsonProperty("columns") List<SchemaPath> columns,
     @JsonProperty("pluginId") StoragePluginId pluginId,
-    @JsonProperty("scans") List<TerracottaDBSubScanSpec> scans
+    @JsonProperty("scans") List<TerracottaDBSubScanSpec> scans,
+    @JsonProperty("datasetName") String datasetName
   ) {
     super(userName, schema, tableSchemaPath, columns);
     this.scans = scans;
     this.pluginId = pluginId;
+    this.datasetName = datasetName;
   }
 
   public StoragePluginId getPluginId() {
@@ -53,6 +57,10 @@ public class TerracottaDBSubScan extends SubScanWithProjection {
 
   @Override
   public int getOperatorType() {
-    return -1;
+    return UserBitShared.CoreOperatorType.TCDB_SUB_SCAN_VALUE;
+  }
+
+  public String getDatasetName() {
+    return datasetName;
   }
 }

@@ -19,6 +19,7 @@ import io.protostuff.ByteString;
 
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.ValueVector;
+import org.apache.arrow.vector.types.pojo.Field;
 
 import com.dremio.common.exceptions.ExecutionSetupException;
 import com.dremio.common.exceptions.UserException;
@@ -28,6 +29,7 @@ import com.dremio.exec.planner.cost.ScanCostFactor;
 import com.dremio.exec.record.BatchSchema;
 import com.dremio.exec.server.SabotContext;
 import com.dremio.exec.store.SampleMutator;
+import com.dremio.plugins.tcdb.internal.TerracottaDBArrowTypeMapper;
 import com.dremio.plugins.tcdb.internal.TerracottaDBRecordReader;
 import com.dremio.plugins.tcdb.internal.TerracottaDBSubScanSpec;
 import com.dremio.plugins.tcdb.proto.TerracottaDBPluginProto;
@@ -49,8 +51,11 @@ import com.terracottatech.store.StoreException;
 import com.terracottatech.store.Type;
 import com.terracottatech.store.manager.DatasetManager;
 
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 public class TerracottaDBTableBuilder implements SourceTableDefinition {
 
@@ -64,6 +69,8 @@ public class TerracottaDBTableBuilder implements SourceTableDefinition {
   private final Dataset<?> dataset;
   private DatasetConfig datasetConfig;
   private final SabotContext context;
+
+  List<DatasetSplit> splits;
 
   public TerracottaDBTableBuilder(NamespaceKey namespaceKey, DatasetManager datasetManager, SabotContext context) {
     this.namespaceKey = namespaceKey;
@@ -85,73 +92,88 @@ public class TerracottaDBTableBuilder implements SourceTableDefinition {
 
   @Override
   public DatasetConfig getDataset() throws Exception {
-    String tableName = namespaceKey.getName();
-    ReadDefinition readDefinition = new ReadDefinition()
-      .setExtendedProperty(
-        ByteString.copyFrom(
-          TerracottaDBPluginProto.TCDBTableXattr.newBuilder()
-            .setTable(com.google.protobuf.ByteString.copyFrom(tableName.getBytes())).build().toByteArray()
+    if (datasetConfig == null) {
+      String tableName = namespaceKey.getName();
+      ReadDefinition readDefinition = new ReadDefinition()
+        .setExtendedProperty(
+          ByteString.copyFrom(
+            TerracottaDBPluginProto.TCDBTableXattr.newBuilder()
+              .setTable(com.google.protobuf.ByteString.copyFrom(tableName.getBytes())).build().toByteArray()
+          )
         )
-      )
       .setScanStats(new ScanStats()
-        .setRecordCount(5L)   //TODO estimate
+        .setRecordCount(100L)   //TODO estimate
         .setType(ScanStatsType.NO_EXACT_ROW_COUNT)
         .setScanFactor(ScanCostFactor.OTHER.getFactor())
       );
 
-    BatchSchema schema = getSchema();
+      BatchSchema schema = getSchema();
 
-    this.datasetConfig = new DatasetConfig()
-      .setFullPathList(namespaceKey.getPathComponents())
-      .setId(new EntityId(UUID.randomUUID().toString()))
-      .setType(DatasetType.PHYSICAL_DATASET)
-      .setName(namespaceKey.getName())
-      .setOwner(SystemUser.SYSTEM_USERNAME)
-      .setPhysicalDataset(new PhysicalDataset())
-      .setRecordSchema(schema.toByteString())
-      .setSchemaVersion(DatasetHelper.CURRENT_VERSION)
-      .setReadDefinition(readDefinition);
+      this.datasetConfig = new DatasetConfig()
+        .setFullPathList(namespaceKey.getPathComponents())
+        .setId(new EntityId(UUID.randomUUID().toString()))
+        .setType(DatasetType.PHYSICAL_DATASET)
+        .setName(namespaceKey.getName())
+        .setOwner(SystemUser.SYSTEM_USERNAME)
+        .setPhysicalDataset(new PhysicalDataset())
+        .setRecordSchema(schema.toByteString())
+        .setSchemaVersion(DatasetHelper.CURRENT_VERSION)
+        .setReadDefinition(readDefinition);
+    }
 
     return this.datasetConfig;
   }
 
   private BatchSchema getSchema() {
-    BatchSchema oldSchema = null;
     ByteString bytes = datasetConfig != null ? DatasetHelper.getSchemaBytes(datasetConfig) : null;
     if(bytes != null) {
-      oldSchema = BatchSchema.deserialize(bytes);
+      return BatchSchema.deserialize(bytes);
     }
 
-    final TerracottaDBSubScanSpec spec = new TerracottaDBSubScanSpec(namespaceKey.getName());
-    try (
-      BufferAllocator allocator = context.getAllocator().newChildAllocator("tcdb-sample", 0, Long.MAX_VALUE);
-      SampleMutator mutator = new SampleMutator(allocator);
-      TerracottaDBRecordReader reader = new TerracottaDBRecordReader(null, GroupScan.ALL_COLUMNS, spec, datasetManager);
-    ) {
-      if(oldSchema != null) {
-        oldSchema.materializeVectors(GroupScan.ALL_COLUMNS, mutator);
-      }
+    List<Field> fields = dataset.reader().records()
+      .limit(1)
+      .flatMap(record -> record.stream())
+      .map(cell -> cell.definition())
+      .sorted(Comparator.comparing(cellDefinition -> cellDefinition.name()))
+      .map(TerracottaDBArrowTypeMapper::mapCellDefinitionToField)
+      .collect(Collectors.toList());
+    return BatchSchema.newBuilder().addFields(fields).build();
 
-//      // add row key.
-//      mutator.addField(CompleteType.VARBINARY.toField(HBaseRecordReader.ROW_KEY), ValueVector.class);
-//
-//      // add all column families.
-//      for (HColumnDescriptor col : descriptor.getFamilies()) {
-//        mutator.addField(CompleteType.struct().toField(col.getNameAsString()), ValueVector.class);
+//    final TerracottaDBSubScanSpec spec = new TerracottaDBSubScanSpec(namespaceKey.getName());
+//    try (
+//      BufferAllocator allocator = context.getAllocator().newChildAllocator("tcdb-sample", 0, Long.MAX_VALUE);
+//      SampleMutator mutator = new SampleMutator(allocator);
+//      TerracottaDBRecordReader reader = new TerracottaDBRecordReader(null, GroupScan.ALL_COLUMNS, spec, datasetManager);
+//    ) {
+//      if(oldSchema != null) {
+//        oldSchema.materializeVectors(GroupScan.ALL_COLUMNS, mutator);
 //      }
-
-      reader.setup(mutator);
-      reader.next();
-      mutator.getContainer().buildSchema(BatchSchema.SelectionVectorMode.NONE);
-      return mutator.getContainer().getSchema();
-    } catch (ExecutionSetupException e) {
-      throw UserException.dataReadError(e).message("Unable to sample schema for table %s.", namespaceKey.getName()).build(logger);
-    }
+//
+////      // add row key.
+////      mutator.addField(CompleteType.VARBINARY.toField(HBaseRecordReader.ROW_KEY), ValueVector.class);
+////
+////      // add all column families.
+////      for (HColumnDescriptor col : descriptor.getFamilies()) {
+////        mutator.addField(CompleteType.struct().toField(col.getNameAsString()), ValueVector.class);
+////      }
+//
+//      reader.setup(mutator);
+//      reader.next();
+//      mutator.getContainer().buildSchema(BatchSchema.SelectionVectorMode.NONE);
+//      return mutator.getContainer().getSchema();
+//    } catch (ExecutionSetupException e) {
+//      throw UserException.dataReadError(e).message("Unable to sample schema for table %s.", namespaceKey.getName()).build(logger);
+//    }
   }
 
   @Override
   public List<DatasetSplit> getSplits() throws Exception {
-    return null;
+    return Collections.emptyList();
+//    if (splits == null) {
+//      DatasetSplit split = new DatasetSplit().setSplitKey("foo").setSize(5L).setRowCount(5L);
+//      splits = Collections.singletonList(split);
+//    }
+//    return splits;
   }
 
   @Override

@@ -30,6 +30,7 @@ import com.dremio.exec.server.SabotContext;
 import com.dremio.exec.store.SchemaConfig;
 import com.dremio.exec.store.StoragePlugin;
 import com.dremio.exec.store.StoragePluginRulesFactory;
+import com.dremio.plugins.tcdb.internal.TerracottaDBRulesFactory;
 import com.dremio.service.namespace.NamespaceKey;
 import com.dremio.service.namespace.SourceState;
 import com.dremio.service.namespace.SourceTableDefinition;
@@ -75,6 +76,9 @@ public class TerracottaDBStoragePlugin implements StoragePlugin {
 
   @Override
   public SourceTableDefinition getDataset(NamespaceKey datasetPath, DatasetConfig oldDataset, boolean ignoreAuthErrors) throws Exception {
+    if (!datasetExists(datasetPath)) {
+      return null;
+    }
     return new TerracottaDBTableBuilder(datasetPath, datasetManager, context);
   }
 
@@ -85,6 +89,9 @@ public class TerracottaDBStoragePlugin implements StoragePlugin {
 
   @Override
   public boolean datasetExists(NamespaceKey key) {
+    if (key.size() != 2) {
+      return false;
+    }
     return true;
   }
 
@@ -110,7 +117,7 @@ public class TerracottaDBStoragePlugin implements StoragePlugin {
 
   @Override
   public Class<? extends StoragePluginRulesFactory> getRulesFactoryClass() {
-    return StoragePluginRulesFactory.NoOpPluginRulesFactory.class;
+    return TerracottaDBRulesFactory.class;
   }
 
   @Override

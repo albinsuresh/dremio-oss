@@ -23,8 +23,3 @@ option java_generate_equals_and_hash = true;
 message TCDBTableXattr {
   optional bytes table = 1;
 }
-
-message TCDBSplitXattr {
-  optional bytes start = 1;
-  optional bytes stop = 2;
-}
